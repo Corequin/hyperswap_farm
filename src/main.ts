@@ -85,14 +85,21 @@ async function performSwap() {
       
       // If we get here without an error, reset the error counter
       resetErrorCounter();
+    } else {
+      console.log("Pas de tokens à vendre.");
       
-      // Decrement sell-only iterations counter if needed
+      // FIX: If there are no tokens to sell and we're in sell-only mode, still decrement the counter
       if (isInSellOnlyMode && sellOnlyIterationsRemaining > 0) {
+        console.log("Skipping sell iteration since there are no tokens to sell");
         sellOnlyIterationsRemaining--;
         console.log(`Sell-only iterations remaining: ${sellOnlyIterationsRemaining}`);
       }
-    } else {
-      console.log("Pas de tokens à vendre.");
+    }
+    
+    // Only decrement the counter if we've actually sold something
+    if (isInSellOnlyMode && sellOnlyIterationsRemaining > 0 && newTokenBalance > 0n) {
+      sellOnlyIterationsRemaining--;
+      console.log(`Sell-only iterations remaining: ${sellOnlyIterationsRemaining}`);
     }
     
     return true;
