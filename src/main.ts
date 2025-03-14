@@ -15,21 +15,47 @@ const TOKEN = "0xdd493377C2AC801639439Dcc1C3c95474Aec6A40";
 const { provider, wallet } = await connectProvider();
 console.log(`Connected with address: ${wallet.address}`);
 
+// Error handling and recovery settings
+let consecutiveErrors = 0;
+let sellOnlyIterationsRemaining = 0;
+let isInSellOnlyMode = false;
+const MAX_CONSECUTIVE_ERRORS = 3;
+const SELL_ONLY_ITERATIONS = 12;
+
+// Reset the error counter when a transaction succeeds
+function resetErrorCounter() {
+  if (consecutiveErrors > 0) {
+    console.log(`Resetting error counter from ${consecutiveErrors} to 0`);
+    consecutiveErrors = 0;
+  }
+}
+
+// Check if the error is a transaction revert error
+function isTransactionRevertError(error: any): boolean {
+  return (
+    error?.code === "CALL_EXCEPTION" && 
+    error?.shortMessage?.includes("transaction execution reverted")
+  );
+}
+
 async function performSwap() {
   try {
     const gasLimit = await getBlockGasLimit(provider);
     console.log(`Block gas limit: ${gasLimit}`);
 
     const wethBalance = await getTokenBalance(WETH, wallet);
+    
+    // Determine if we're in sell-only mode
+    if (sellOnlyIterationsRemaining > 0) {
+      isInSellOnlyMode = true;
+      console.log(`In SELL-ONLY mode: ${sellOnlyIterationsRemaining} iterations remaining`);
+    } else {
+      isInSellOnlyMode = false;
+    }
 
-    // ------------------
-    // Ici tu peux changer "false" en "true" pour acheter et vendre
-    // Si tu le mets en true, le bot ne fera que vendre les tokens
-    const onlySell = false;
-    // ------------------
-
-    if (!onlySell) {
-      const amountIn = ethers.parseEther("100");
+    // Buy tokens if not in sell-only mode
+    if (!isInSellOnlyMode) {
+      const amountIn = ethers.parseEther("50");
 
       console.log("Achat de tokens...");
       await buyTokens(
@@ -42,30 +68,65 @@ async function performSwap() {
 
       console.log("Attente pour synchronisation...");
       await new Promise((resolve) => setTimeout(resolve, 100));
+      
+      // If we get here without an error, reset the error counter
+      resetErrorCounter();
     }
 
+    // Sell tokens
     const newTokenBalance = await getTokenBalance(TOKEN, wallet);
 
     if (newTokenBalance > 0n) {
-      const sellAmount = newTokenBalance / 2n;
+      // In normal mode, sell half of balance; in sell-only mode, sell everything
+      const sellAmount = isInSellOnlyMode ? newTokenBalance : newTokenBalance / 2n;
 
-      console.log("Vente de tokens...");
-
+      console.log(`Vente de tokens... (${isInSellOnlyMode ? 'all' : 'half'})`);
       await sellTokens(TOKEN, WETH, sellAmount, 0n, wallet);
+      
+      // If we get here without an error, reset the error counter
+      resetErrorCounter();
+      
+      // Decrement sell-only iterations counter if needed
+      if (isInSellOnlyMode && sellOnlyIterationsRemaining > 0) {
+        sellOnlyIterationsRemaining--;
+        console.log(`Sell-only iterations remaining: ${sellOnlyIterationsRemaining}`);
+      }
     } else {
       console.log("Pas de tokens à vendre.");
     }
-  } catch (error) {
-    console.error("Error:", error);
+    
+    return true;
+  } catch (error: any) {
+    if (isTransactionRevertError(error)) {
+      consecutiveErrors++;
+      console.error(`Transaction revert error (${consecutiveErrors}/${MAX_CONSECUTIVE_ERRORS}):`);
+      console.error(error.shortMessage || "Unknown transaction error");
+      
+      // Check if we need to switch to sell-only mode
+      if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS && !isInSellOnlyMode) {
+        console.log(`\n!!! DETECTED ${MAX_CONSECUTIVE_ERRORS} CONSECUTIVE ERRORS !!!`);
+        console.log(`Switching to SELL-ONLY mode for ${SELL_ONLY_ITERATIONS} iterations`);
+        sellOnlyIterationsRemaining = SELL_ONLY_ITERATIONS;
+        isInSellOnlyMode = true;
+        consecutiveErrors = 0; // Reset counter after taking action
+      }
+    } else {
+      console.error("Error:", error);
+    }
+    return false;
   }
 }
 
 async function main() {
-  console.log("Démarrage du bot de swap en boucle");
+  console.log("Démarrage du bot de swap en boucle avec auto-recovery");
+  console.log(`Configuration: ${MAX_CONSECUTIVE_ERRORS} erreurs consécutives → ${SELL_ONLY_ITERATIONS} itérations de vente`);
 
   while (true) {
-    console.log("\n--- Nouvelle session de swap ---");
+    console.log(`\n--- Nouvelle session de swap ${isInSellOnlyMode ? '(SELL-ONLY MODE)' : ''} ---`);
     await performSwap();
+    
+    // Add a small delay between iterations to avoid rate limiting
+    await new Promise((resolve) => setTimeout(resolve, 1000));
   }
 }
 
